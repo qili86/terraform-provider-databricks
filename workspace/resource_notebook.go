@@ -144,44 +144,14 @@ func (a NotebooksAPI) List(path string, recursive bool) ([]ObjectStatus, error) 
 }
 
 func (a NotebooksAPI) recursiveAddPaths(path string, pathList *[]ObjectStatus) error {
-	notebookInfoList, err := a.list(path)
+	objectInfoList, err := a.list(path)
 	if err != nil {
 		return err
 	}
-	for _, v := range notebookInfoList {
-		if v.ObjectType == Notebook {
-			*pathList = append(*pathList, v)
-		} else if v.ObjectType == Directory {
-			err := a.recursiveAddPaths(v.Path, pathList)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return err
-}
-
-func (a NotebooksAPI) ListDirectories(path string, recursive bool) ([]ObjectStatus, error) {
-	if recursive {
-		var paths []ObjectStatus
-		err := a.recursiveAddDirectoryPaths(path, &paths)
-		if err != nil {
-			return nil, err
-		}
-		return paths, err
-	}
-	return a.list(path)
-}
-
-func (a NotebooksAPI) recursiveAddDirectoryPaths(path string, pathList *[]ObjectStatus) error {
-	directoryInfoList, err := a.list(path)
-	if err != nil {
-		return err
-	}
-	for _, v := range directoryInfoList {
+	for _, v := range objectInfoList {
+		*pathList = append(*pathList, v)
 		if v.ObjectType == Directory {
-			*pathList = append(*pathList, v)
-			err := a.recursiveAddDirectoryPaths(v.Path, pathList)
+			err := a.recursiveAddPaths(v.Path, pathList)
 			if err != nil {
 				return err
 			}

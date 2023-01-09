@@ -1095,61 +1095,83 @@ var resourcesMap map[string]importable = map[string]importable{
 		},
 		List: func(ic *importContext) error {
 			notebooksAPI := workspace.NewNotebooksAPI(ic.Context, ic.Client)
-			notebookList, err := notebooksAPI.List("/", true)
+			objectList, err := notebooksAPI.List("/", true)
 			if err != nil {
 				return err
 			}
-			for offset, notebook := range notebookList {
-				if strings.HasPrefix(notebook.Path, "/Repos") {
+			for offset, object := range objectList {
+				if strings.HasPrefix(object.Path, "/Repos") {
 					continue
 				}
 				// TODO: emit permissions for notebook folders if non-default,
 				// as per-notebook permission entry would be a noise in the state
-				ic.Emit(&resource{
-					Resource: "databricks_notebook",
-					ID:       notebook.Path,
-				})
+				if object.ObjectType == "NOTEBOOK" {
+					ic.Emit(&resource{
+						Resource: "databricks_notebook",
+						ID:       object.Path,
+					})
+				}
+
+				if object.ObjectType == "DIRECTORY" {
+					ic.Emit(&resource{
+						Resource: "databricks_directory",
+						ID:       object.Path,
+					})
+				}
+
 				if offset%50 == 0 {
-					log.Printf("[INFO] Scanned %d of %d notebooks",
-						offset+1, len(notebookList))
+					log.Printf("[INFO] Scanned %d of %d workspace objects",
+						offset+1, len(objectList))
 				}
 			}
 			return nil
 		},
 		Import: func(ic *importContext, r *resource) error {
-			ic.emitUserOrServicePrincipalForPath(r.ID, "/Users")
-			notebooksAPI := workspace.NewNotebooksAPI(ic.Context, ic.Client)
-			contentB64, err := notebooksAPI.Export(r.ID, "SOURCE")
-			if err != nil {
-				return err
-			}
-			language := r.Data.Get("language").(string)
-			ext := map[string]string{
-				"SCALA":  ".scala",
-				"PYTHON": ".py",
-				"SQL":    ".sql",
-				"R":      ".r",
-			}
-			name := r.ID[1:] + ext[language] // todo: replace non-alphanum+/ with _
-			content, _ := base64.StdEncoding.DecodeString(contentB64)
-			fileName, err := ic.createFileIn("notebooks", name, []byte(content))
 			splits := strings.Split(r.Name, "_")
-			notebookId := splits[len(splits)-1]
+			objectId := splits[len(splits)-1]
 
-			if ic.meAdmin {
-				ic.Emit(&resource{
-					Resource: "databricks_permissions",
-					ID:       fmt.Sprintf("/notebooks/%s", notebookId),
-					Name:     "notebook_" + ic.Importables["databricks_notebook"].Name(ic, r.Data),
-				})
+			if r.Resource == "databricks_directory" {
+				if ic.meAdmin {
+					ic.Emit(&resource{
+						Resource: "databricks_permissions",
+						ID:       fmt.Sprintf("/directories/%s", objectId),
+						Name:     "directory_" + ic.Importables["databricks_directory"].Name(ic, r.Data),
+					})
+				}
 			}
 
-			if err != nil {
-				return err
+			if r.Resource == "databricks_notebook" {
+				if ic.meAdmin {
+					ic.Emit(&resource{
+						Resource: "databricks_permissions",
+						ID:       fmt.Sprintf("/notebooks/%s", objectId),
+						Name:     "notebook_" + ic.Importables["databricks_notebook"].Name(ic, r.Data),
+					})
+				}
+				ic.emitUserOrServicePrincipalForPath(r.ID, "/Users")
+				notebooksAPI := workspace.NewNotebooksAPI(ic.Context, ic.Client)
+				contentB64, err := notebooksAPI.Export(r.ID, "SOURCE")
+				if err != nil {
+					return err
+				}
+				language := r.Data.Get("language").(string)
+				ext := map[string]string{
+					"SCALA":  ".scala",
+					"PYTHON": ".py",
+					"SQL":    ".sql",
+					"R":      ".r",
+				}
+				name := r.ID[1:] + ext[language] // todo: replace non-alphanum+/ with _
+				content, _ := base64.StdEncoding.DecodeString(contentB64)
+				fileName, err := ic.createFileIn("notebooks", name, []byte(content))
+				if err != nil {
+					return err
+				}
+				log.Printf("Creating %s for %s", fileName, r)
+				r.Data.Set("source", fileName)
+				return r.Data.Set("language", "")
 			}
-			log.Printf("Creating %s for %s", fileName, r)
-			r.Data.Set("source", fileName)
-			return r.Data.Set("language", "")
+			return nil
 		},
 		Depends: []reference{
 			{Path: "source", File: true},
@@ -1489,54 +1511,6 @@ var resourcesMap map[string]importable = map[string]importable{
 			{Path: "library.notebook.path", Resource: "databricks_repo", Match: "path", MatchType: MatchPrefix},
 			{Path: "library.jar", Resource: "databricks_dbfs_file", Match: "dbfs_path"},
 			{Path: "library.whl", Resource: "databricks_dbfs_file", Match: "dbfs_path"},
-		},
-	},
-	"databricks_directory": {
-		Service: "directories",
-		Name: func(ic *importContext, d *schema.ResourceData) string {
-			name := d.Get("path").(string)
-			if name == "" {
-				return d.Id()
-			} else {
-				name = nameNormalizationRegex.ReplaceAllString(name[1:], "_") + "_" +
-					strconv.FormatInt(int64(d.Get("object_id").(int)), 10)
-			}
-			return name
-		},
-		List: func(ic *importContext) error {
-			notebooksAPI := workspace.NewNotebooksAPI(ic.Context, ic.Client)
-			directoryList, err := notebooksAPI.ListDirectories("/", true)
-			if err != nil {
-				return err
-			}
-			for offset, directory := range directoryList {
-				if strings.HasPrefix(directory.Path, "/Repos") {
-					continue
-				}
-				ic.Emit(&resource{
-					Resource: "databricks_directory",
-					ID:       directory.Path,
-				})
-				if offset%50 == 0 {
-					log.Printf("[INFO] Scanned %d of %d directories",
-						offset+1, len(directoryList))
-				}
-			}
-			return nil
-		},
-		Import: func(ic *importContext, r *resource) error {
-
-			splits := strings.Split(r.Name, "_")
-			directoryId := splits[len(splits)-1]
-
-			if ic.meAdmin {
-				ic.Emit(&resource{
-					Resource: "databricks_permissions",
-					ID:       fmt.Sprintf("/directories/%s", directoryId),
-					Name:     "directory_" + ic.Importables["databricks_directory"].Name(ic, r.Data),
-				})
-			}
-			return nil
 		},
 	},
 }
